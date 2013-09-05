@@ -15,6 +15,10 @@
             "email": "igor@wiedler.ch"
         }
     ],
+    "repositories": [{
+        "type": "vcs",
+        "url": "http://github.com/tiraeth/Security"
+    }],
     "require": {
         "php": ">=5.3.3",
         "pimple/pimple": "1.*",
