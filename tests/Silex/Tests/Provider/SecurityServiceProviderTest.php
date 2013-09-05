@@ -119,6 +119,33 @@ class SecurityServiceProviderTest extends WebTestCase
         $this->assertEquals('admin', $client->getResponse()->getContent());
     }
 
+    public function testX509Authentication()
+    {
+        $app = $this->createApplication('x509');
+
+        $client = new Client($app);
+
+        $client->request('get', '/');
+        $this->assertEquals(403, $client->getResponse()->getStatusCode());
+
+        $client->request('get', '/', array(), array(), array('SSL_CLIENT_S_DN_Email' => 'dennis@example.com', 'SSL_CLIENT_S_DN' => 'foo'));
+        $this->assertEquals(200, $client->getResponse()->getStatusCode());
+        $this->assertEquals('dennis@example.comAUTHENTICATED', $client->getResponse()->getContent());
+        
+        $client->request('get', '/admin', array(), array(), array('SSL_CLIENT_S_DN_Email' => 'dennis@example.com', 'SSL_CLIENT_S_DN' => 'foo'));
+        $this->assertEquals(403, $client->getResponse()->getStatusCode());
+
+        $client->restart();
+
+        $client->request('get', '/', array(), array(), array('SSL_CLIENT_S_DN_Email' => 'admin@example.com', 'SSL_CLIENT_S_DN' => 'foo'));
+        $this->assertEquals(200, $client->getResponse()->getStatusCode());
+        $this->assertEquals('admin@example.comAUTHENTICATEDADMIN', $client->getResponse()->getContent());
+        
+        $client->request('get', '/admin', array(), array(), array('SSL_CLIENT_S_DN_Email' => 'admin@example.com', 'SSL_CLIENT_S_DN' => 'foo'));
+        $this->assertEquals(200, $client->getResponse()->getStatusCode());
+        $this->assertEquals('admin', $client->getResponse()->getContent());
+    }
+
     public function testUserPasswordValidatorIsRegistered()
     {
         if (!is_dir(__DIR__.'/../../../../vendor/symfony/validator')) {
@@ -224,6 +251,50 @@ class SecurityServiceProviderTest extends WebTestCase
                         // password is foo
                         'dennis' => array('ROLE_USER', '5FZ2Z8QIkA7UTZ4BYkoC+GsReLf569mSKDsfods6LYQ8t+a8EW9oaircfMpmaLbPBh4FOBiiFyLfuZmTSUwzZg=='),
                         'admin'  => array('ROLE_ADMIN', '5FZ2Z8QIkA7UTZ4BYkoC+GsReLf569mSKDsfods6LYQ8t+a8EW9oaircfMpmaLbPBh4FOBiiFyLfuZmTSUwzZg=='),
+                    ),
+                ),
+            ),
+            'security.access_rules' => array(
+                array('^/admin', 'ROLE_ADMIN'),
+            ),
+            'security.role_hierarchy' => array(
+                'ROLE_ADMIN' => array('ROLE_USER'),
+            ),
+        ));
+
+        $app->get('/', function() use ($app) {
+            $user = $app['security']->getToken()->getUser();
+
+            $content = is_object($user) ? $user->getUsername() : 'ANONYMOUS';
+
+            if ($app['security']->isGranted('IS_AUTHENTICATED_FULLY')) {
+                $content .= 'AUTHENTICATED';
+            }
+
+            if ($app['security']->isGranted('ROLE_ADMIN')) {
+                $content .= 'ADMIN';
+            }
+
+            return $content;
+        });
+
+        $app->get('/admin', function() use ($app) {
+            return 'admin';
+        });
+
+        return $app;
+    }
+
+    private function addX509Authentication($app)
+    {
+        $app->register(new SecurityServiceProvider(), array(
+            'security.firewalls' => array(
+                'x509_cert' => array(
+                    'pattern' => '^.*$',
+                    'x509' => true,
+                    'users' => array(
+                        'dennis@example.com' => array('ROLE_USER', null),
+                        'admin@example.com'  => array('ROLE_ADMIN', null),
                     ),
                 ),
             ),

@@ -24,6 +24,7 @@ use Symfony\Component\Security\Core\Encoder\EncoderFactory;
 use Symfony\Component\Security\Core\Encoder\MessageDigestPasswordEncoder;
 use Symfony\Component\Security\Core\Authentication\Provider\DaoAuthenticationProvider;
 use Symfony\Component\Security\Core\Authentication\Provider\AnonymousAuthenticationProvider;
+use Symfony\Component\Security\Core\Authentication\Provider\PreAuthenticatedAuthenticationProvider;
 use Symfony\Component\Security\Core\Authentication\AuthenticationProviderManager;
 use Symfony\Component\Security\Core\Authentication\AuthenticationTrustResolver;
 use Symfony\Component\Security\Http\Authentication\DefaultAuthenticationSuccessHandler;
@@ -44,8 +45,10 @@ use Symfony\Component\Security\Http\Firewall\AnonymousAuthenticationListener;
 use Symfony\Component\Security\Http\Firewall\ContextListener;
 use Symfony\Component\Security\Http\Firewall\ExceptionListener;
 use Symfony\Component\Security\Http\Firewall\ChannelListener;
+use Symfony\Component\Security\Http\Firewall\X509AuthenticationListener;
 use Symfony\Component\Security\Http\EntryPoint\FormAuthenticationEntryPoint;
 use Symfony\Component\Security\Http\EntryPoint\BasicAuthenticationEntryPoint;
+use Symfony\Component\Security\Http\EntryPoint\Http403ForbiddenEntryPoint;
 use Symfony\Component\Security\Http\EntryPoint\RetryAuthenticationEntryPoint;
 use Symfony\Component\Security\Http\Session\SessionAuthenticationStrategy;
 use Symfony\Component\Security\Http\Logout\SessionLogoutHandler;
@@ -122,12 +125,14 @@ class SecurityServiceProvider implements ServiceProviderInterface
         });
 
         // generate the build-in authentication factories
-        foreach (array('logout', 'pre_auth', 'form', 'http', 'remember_me', 'anonymous') as $type) {
+        foreach (array('logout', 'pre_auth', 'form', 'http', 'x509', 'remember_me', 'anonymous') as $type) {
             $entryPoint = null;
             if ('http' === $type) {
                 $entryPoint = 'http';
             } elseif ('form' === $type) {
                 $entryPoint = 'form';
+            } elseif ('x509' === $type) {
+                $entryPoint = '403';
             }
 
             $app['security.authentication_listener.factory.'.$type] = $app->protect(function($name, $options) use ($type, $app, $entryPoint) {
@@ -139,7 +144,13 @@ class SecurityServiceProvider implements ServiceProviderInterface
                     $app['security.authentication_listener.'.$name.'.'.$type] = $app['security.authentication_listener.'.$type.'._proto']($name, $options);
                 }
 
-                $provider = 'anonymous' === $type ? 'anonymous' : 'dao';
+                $provider = 'dao';
+                if ('anonymous' === $type) {
+                    $provider = 'anonymous';
+                } elseif ('x509' === $type) {
+                    $provider = 'pre_auth';
+                }
+
                 if (!isset($app['security.authentication_provider.'.$name.'.'.$provider])) {
                     $app['security.authentication_provider.'.$name.'.'.$provider] = $app['security.authentication_provider.'.$provider.'._proto']($name);
                 }
@@ -148,7 +159,7 @@ class SecurityServiceProvider implements ServiceProviderInterface
                     'security.authentication_provider.'.$name.'.'.$provider,
                     'security.authentication_listener.'.$name.'.'.$type,
                     $entryPoint ? 'security.entry_point.'.$name.'.'.$entryPoint : null,
-                    $type
+                    'x509' === $type ? 'pre_auth' : $type
                 );
             });
         }
@@ -438,6 +449,23 @@ class SecurityServiceProvider implements ServiceProviderInterface
             });
         });
 
+        $app['security.authentication_listener.x509._proto'] = $app->protect(function ($providerKey, $options) use ($app) {
+            return $app->share(function () use ($app, $providerKey, $options) {
+                $clientKey = isset($options['client_key']) ? $options['client_key'] : 'SSL_CLIENT_S_DN_Email';
+                $credentialsKey = isset($options['credentials_key']) ? $options['credentials_key'] : 'SSL_CLIENT_S_DN';
+                
+                return new X509AuthenticationListener(
+                    $app['security'],
+                    $app['security.authentication_manager'],
+                    $providerKey,
+                    $clientKey,
+                    $credentialsKey,
+                    $app['logger'],
+                    $app['dispatcher']
+                );
+            });
+        });
+
         $app['security.authentication.logout_handler._proto'] = $app->protect(function ($name, $options) use ($app) {
             return $app->share(function () use ($name, $options, $app) {
                 return new DefaultLogoutSuccessHandler(
@@ -504,6 +532,12 @@ class SecurityServiceProvider implements ServiceProviderInterface
             });
         });
 
+        $app['security.entry_point.403._proto'] = $app->protect(function ($name, array $options) use ($app) {
+            return $app->share(function () use ($app, $name, $options) {
+                return new Http403ForbiddenEntryPoint();
+            });
+        });
+
         $app['security.authentication_provider.dao._proto'] = $app->protect(function ($name) use ($app) {
             return $app->share(function () use ($app, $name) {
                 return new DaoAuthenticationProvider(
@@ -518,6 +552,16 @@ class SecurityServiceProvider implements ServiceProviderInterface
         $app['security.authentication_provider.anonymous._proto'] = $app->protect(function ($name) use ($app) {
             return $app->share(function () use ($app, $name) {
                 return new AnonymousAuthenticationProvider($name);
+            });
+        });
+
+        $app['security.authentication_provider.pre_auth._proto'] = $app->protect(function ($name) use ($app) {
+            return $app->share(function () use ($app, $name) {
+                return new PreAuthenticatedAuthenticationProvider(
+                    $app['security.user_provider.'.$name],
+                    $app['security.user_checker'],
+                    $name
+                );
             });
         });
 
